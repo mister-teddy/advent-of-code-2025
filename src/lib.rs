@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use arboard::Clipboard;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+pub fn get_input() -> String {
+    let warning =
+        "📋 Clipboard contains no input. Please copy the test input to your system clipboard";
+    let mut clipboard = Clipboard::new().unwrap();
+    let content = clipboard.get_text().expect(warning);
+    if content.len() == 0 {
+        println!("{}", warning);
+    } else {
+        println!("📋 {}", content);
     }
+    content
 }
