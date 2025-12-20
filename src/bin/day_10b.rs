@@ -1,5 +1,7 @@
 use advent_of_code_2025::get_input;
+use std::{collections::HashMap, ops::BitXor};
 
+#[derive(Clone)]
 struct JoltageLevels(Vec<usize>);
 
 impl From<&str> for JoltageLevels {
@@ -34,77 +36,152 @@ impl From<&str> for Button {
     }
 }
 
+impl Button {
+    fn as_state(&self) -> usize {
+        let mut res = 0;
+        for num in &self.0 {
+            res += 2_i32.pow(*num as u32);
+        }
+        res as usize
+    }
+}
+
 struct Machine {
-    desired_voltages: JoltageLevels,
     buttons: Vec<Button>,
+    desired_voltages: JoltageLevels,
+    cache: HashMap<(Vec<usize>, usize), usize>,
+    solvable_states: HashMap<usize, Vec<usize>>,
 }
 
 impl Machine {
-    fn min_presses(&self) -> usize {
-        // This is a linear algebra problem
-        // Let A[i][j] = 1 if button i toggles voltage j, else 0
-        // Let x[i] = number of times button i is pressed
-        // And b[j] = the desired voltage of j
-        // Then, we need to solve the equation:
-        // A * x = b
-        let mut matrix = vec![vec![0i32; self.buttons.len() + 1]; self.desired_voltages.0.len()];
-        for j in 0..self.buttons.len() {
-            for &i in &self.buttons[j].0 {
-                matrix[i][j] = 1;
+    fn init(buttons: Vec<Button>, desired_voltages: JoltageLevels) -> Self {
+        let machine = Self {
+            buttons,
+            desired_voltages,
+            cache: HashMap::new(),
+            solvable_states: HashMap::new(),
+        };
+        let solvable_states: HashMap<usize, Vec<usize>> = (1..2_usize
+            .pow(machine.desired_voltages.0.len() as u32))
+            .filter_map(|state| {
+                machine
+                    .button_presses(state)
+                    .map(|presses| (state, presses))
+            })
+            .collect();
+        Self {
+            buttons: machine.buttons,
+            desired_voltages: machine.desired_voltages,
+            cache: HashMap::new(),
+            solvable_states,
+        }
+    }
+
+    fn button_presses(&self, desired_state: usize) -> Option<Vec<usize>> {
+        // Check day_10a for explanation
+        // We also add a new table to trace back the button presses
+        let size = self.desired_voltages.0.len();
+        let total_state = 2i32.pow(size as u32) as usize;
+
+        let mut trace = vec![vec![false; total_state]; self.buttons.len() + 1];
+
+        let mut f = vec![vec![usize::MAX; total_state]; self.buttons.len() + 1];
+        f[0][0] = 0;
+
+        for i in 1..=self.buttons.len() {
+            for state in 0..total_state {
+                let without_press = f[i - 1][state];
+                let with_press =
+                    f[i - 1][state.bitxor(self.buttons[i - 1].as_state())].saturating_add(1);
+                if with_press < without_press {
+                    trace[i - 1][state] = true;
+                }
+                f[i][state] = without_press.min(with_press);
             }
         }
-        for (i, row) in matrix.iter_mut().enumerate() {
-            row[self.buttons.len()] = self.desired_voltages.0[i] as i32;
+
+        let mut button_presses = vec![0; self.buttons.len()];
+        let mut current_state = desired_state;
+        while current_state != 0 {
+            let min_index = f
+                .iter()
+                .map(|row| row[current_state])
+                .enumerate()
+                .min_by_key(|&(_, val)| val)
+                .unwrap()
+                .0;
+
+            if min_index == 0 {
+                // All Infinity, no solution
+                return None;
+            }
+
+            let min_index = min_index - 1; // Adjust for the extra row in f
+            button_presses[min_index] += 1;
+            current_state ^= self.buttons[min_index].as_state();
+        }
+        Some(button_presses)
+    }
+
+    fn solve_joltage_to_desired_state(
+        &mut self,
+        current_joltage: &JoltageLevels,
+        desired_state: usize,
+    ) -> usize {
+        if let Some(&cached) = self.cache.get(&(current_joltage.0.clone(), desired_state)) {
+            return cached;
         }
 
-        loop {
-            // Now, we can perform Gaussian elimination on the matrix
-            let mut finished = 0;
-            loop {
-                if matrix[finished][finished] == 0 {
-                    let i = matrix
-                        .iter()
-                        .enumerate()
-                        .position(|(i, row)| i > finished && row[finished] != 0);
-                    if let Some(i) = i {
-                        matrix.swap(i, finished); // Make sure the pivot row is at the top
-                    }
-                }
-                let scalar = matrix[finished][finished];
-                if scalar != 0 {
-                    matrix[finished].iter_mut().for_each(|val| {
-                        *val /= scalar;
-                    });
-                    for i in 0..matrix.len() {
-                        if i != finished {
-                            let scalar = matrix[i][finished];
-                            for j in 0..matrix[i].len() {
-                                matrix[i][j] -= scalar * matrix[finished][j];
+        let button_presses = self.solvable_states.get(&desired_state);
+
+        match button_presses {
+            Some(button_presses) => {
+                let mut new_joltage = JoltageLevels(current_joltage.0.clone());
+                for (i, &count) in button_presses.iter().enumerate() {
+                    if count > 0 {
+                        for index in self.buttons[i].0.iter() {
+                            if new_joltage.0[*index] == 0 {
+                                return usize::MAX;
                             }
+                            new_joltage.0[*index] -= 1
                         }
                     }
                 }
-                finished += 1;
-                if finished >= matrix.len() || finished >= matrix[0].len() - 1 {
-                    break;
-                }
+                let res = button_presses
+                    .iter()
+                    .sum::<usize>()
+                    .saturating_add(self.solve_joltage(&new_joltage));
+                self.cache
+                    .insert((current_joltage.0.clone(), desired_state), res);
+                res
             }
-
-            println!("Matrix after elimination: {:?}", matrix);
-            let solved_buttons: Vec<&Vec<i32>> = matrix
-                .iter()
-                .filter(|row| {
-                    let zero_count = row.iter().take(row.len() - 1).filter(|&&x| x == 0).count();
-                    let one_count = row.iter().take(row.len() - 1).filter(|&&x| x == 1).count();
-                    return zero_count == row.len() - 2 && one_count == 1;
-                })
-                .collect();
-
-            println!("Solved buttons: {:?}", solved_buttons);
-            break;
+            None => return usize::MAX,
         }
+    }
 
-        matrix.iter().map(|row| row.last().unwrap()).sum::<i32>() as usize
+    fn solve_joltage(&mut self, joltage: &JoltageLevels) -> usize {
+        if joltage.0.iter().all(|&v| v == 0) {
+            return 0;
+        }
+        let states = self.solvable_states.keys().cloned().collect::<Vec<usize>>();
+        states
+            .iter()
+            .map(|state| {
+                let res = self.solve_joltage_to_desired_state(joltage, *state);
+                res
+            })
+            .min()
+            .unwrap()
+    }
+
+    fn solve(mut self) -> usize {
+        let joltage = self.desired_voltages.clone();
+        println!(
+            "Solving machine with desired voltages: {:?} and solvable states: {:?}",
+            joltage.0,
+            self.solvable_states.keys()
+        );
+        self.solve_joltage(&joltage)
     }
 }
 
@@ -126,14 +203,11 @@ fn main() {
             .take_while(|part| part.starts_with('('))
             .map(|part| part.into())
             .collect();
-        machines.push(Machine {
-            desired_voltages,
-            buttons,
-        });
+        machines.push(Machine::init(buttons, desired_voltages));
     }
     // Finished input
 
     // Start calculation
-    let res: usize = machines.iter().map(|m| m.min_presses()).sum();
+    let res: usize = machines.into_iter().map(|m| m.solve()).sum();
     println!("👉 {res}");
 }
