@@ -8,7 +8,7 @@ pub fn get_input() -> String {
     if content.len() == 0 {
         println!("{}", warning);
     } else {
-        println!("📋 {}", content);
+        println!("{}", content);
     }
     content
 }
